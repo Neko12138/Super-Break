@@ -1,6 +1,19 @@
 const GAME_WIDTH = 1920;
 const GAME_HEIGHT = 1080;
 const WALL_MARGIN = 80;
+const FIELD_TOP = 90;
+const PADDLE_Y = 935;
+const PADDLE_WIDTH = 290;
+const BALL_RADIUS = 10;
+const BALL_SPEED = 850;
+const MIDDLE_LAYER = 1;
+
+// Physics runs in the same X/Y space on every layer. Only drawing uses this projection.
+const LAYERS = [
+    { name: 'NEAR', scale: 0.98, top: 262, color: 0xffa86e },
+    { name: 'MID', scale: 0.83, top: 193, color: 0x60efdc },
+    { name: 'FAR', scale: 0.68, top: 124, color: 0xba9bff }
+];
 
 class GameScene extends Phaser.Scene {
     constructor() {
@@ -8,202 +21,103 @@ class GameScene extends Phaser.Scene {
     }
 
     create() {
-        this.score = 0;
+        this.layer = MIDDLE_LAYER;
         this.lives = 3;
         this.started = false;
         this.finished = false;
-        this.targetPaddleX = GAME_WIDTH / 2;
+        this.pointerX = null;
 
-        this.createBounds();
+        this.physics.world.setBounds(WALL_MARGIN, FIELD_TOP, GAME_WIDTH - 2 * WALL_MARGIN, GAME_HEIGHT);
+        this.physics.world.setBoundsCollision(true, true, true, false);
+
+        this.playfield = this.add.graphics();
+        this.paddle = this.add.rectangle(GAME_WIDTH / 2, PADDLE_Y, PADDLE_WIDTH, 24).setVisible(false);
+        this.physics.add.existing(this.paddle);
+        this.paddle.body.setImmovable(true);
+
+        this.ball = this.add.circle(GAME_WIDTH / 2, PADDLE_Y - 42, BALL_RADIUS).setVisible(false);
+        this.physics.add.existing(this.ball);
+        this.ball.body.setCircle(BALL_RADIUS).setBounce(1).setCollideWorldBounds(true);
+
+        this.bricks = this.physics.add.staticGroup();
         this.createBricks();
-        this.createPaddle();
-        this.createBall();
-        this.createCollisions();
-        this.createControls();
-        this.resetBall();
-    }
 
-    createBounds() {
-        const bounds = this.add.graphics();
-        bounds.lineStyle(3, 0x00d9ff, 0.35);
-        bounds.beginPath();
-        bounds.moveTo(WALL_MARGIN, GAME_HEIGHT);
-        bounds.lineTo(WALL_MARGIN, 90);
-        bounds.lineTo(GAME_WIDTH - WALL_MARGIN, 90);
-        bounds.lineTo(GAME_WIDTH - WALL_MARGIN, GAME_HEIGHT);
-        bounds.strokePath();
+        this.physics.add.collider(this.ball, this.paddle, this.onPaddleHit,
+            (ball) => this.started && ball.body.velocity.y > 0, this);
+        this.physics.add.collider(this.ball, this.bricks, this.onBrickHit,
+            (ball, brick) => this.started && brick.layer === this.layer, this);
+
+        this.hud = this.add.text(48, 30, '', { fontFamily: 'monospace', fontSize: '28px' });
+        this.add.text(48, 1024, 'MOUSE / A D / ARROWS TO MOVE     CLICK / SPACE TO SERVE',
+            { fontFamily: 'monospace', fontSize: '25px', color: '#9eabc4' });
+        this.status = this.add.text(GAME_WIDTH / 2, 540, '', {
+            fontFamily: 'monospace', fontSize: '34px', backgroundColor: '#101523',
+            padding: { x: 20, y: 12 }
+        }).setOrigin(0.5);
+        this.zoneLabels = ['FARTHER', 'STAY', 'NEARER'].map((label) =>
+            this.add.text(0, 0, label, {
+                fontFamily: 'monospace', fontSize: '21px', color: '#e3ebff'
+            }).setOrigin(0.5, 0));
+
+        this.createControls();
+        this.drawPlayfield();
     }
 
     createBricks() {
-        this.bricks = this.physics.add.staticGroup();
-
-        const columns = 8;
-        const rows = 5;
-        const brickWidth = 190;
-        const targetHeight = 24;
-        const gap = 16;
-        const totalWidth = columns * brickWidth + (columns - 1) * gap;
-        const startX = (GAME_WIDTH - totalWidth) / 2 + brickWidth / 2;
-        const startY = 190;
-        const colors = [0x00f0ff, 0x437bff, 0x9c4dff, 0xff3cac, 0xff8a2b];
-
-        for (let row = 0; row < rows; row += 1) {
-            for (let column = 0; column < columns; column += 1) {
-                const x = startX + column * (brickWidth + gap);
-                const y = startY + row * 66;
-                const color = colors[row];
-
-                const glow = this.add.rectangle(x, y, brickWidth, 14, color, 0.16);
-                const line = this.add.rectangle(x, y, brickWidth, 3, color, 1);
-                const brick = this.add.rectangle(x, y, brickWidth, targetHeight, 0x000000, 0);
-                brick.glow = glow;
-                brick.line = line;
-
+        const positions = [
+            [[540, 310], [960, 375]],
+            [[960, 375], [1380, 310]],
+            [[960, 375], [1320, 235]]
+        ];
+        LAYERS.forEach((_, layer) => {
+            for (const [x, y] of positions[layer]) {
+                const brick = this.add.rectangle(x, y, 220, 48).setVisible(false);
+                brick.layer = layer;
                 this.bricks.add(brick);
-                brick.body.updateFromGameObject();
             }
-        }
-
-        this.bricksRemaining = columns * rows;
-    }
-
-    createPaddle() {
-        this.paddleGlow = this.add.rectangle(GAME_WIDTH / 2, 935, 250, 14, 0x00f0ff, 0.2);
-        this.paddleLine = this.add.rectangle(GAME_WIDTH / 2, 935, 250, 3, 0x8affff, 1);
-        this.paddle = this.add.rectangle(GAME_WIDTH / 2, 935, 250, 24, 0x000000, 0);
-        this.physics.add.existing(this.paddle);
-        this.paddle.body.setImmovable(true);
-        this.paddle.body.setAllowGravity(false);
-    }
-
-    createBall() {
-        this.ballTrail = [];
-        this.trailGraphics = this.add.graphics();
-
-        this.ballGlow = this.add.circle(GAME_WIDTH / 2, 890, 22, 0xff3cac, 0.2);
-        this.ball = this.add.circle(GAME_WIDTH / 2, 890, 9, 0xffd4ee, 1);
-        this.physics.add.existing(this.ball);
-        this.ball.body.setCircle(10);
-        this.ball.body.setBounce(1, 1);
-        this.ball.body.setAllowGravity(false);
-        this.ball.body.setCollideWorldBounds(true);
-    }
-
-    createCollisions() {
-        this.physics.world.setBounds(
-            WALL_MARGIN,
-            90,
-            GAME_WIDTH - WALL_MARGIN * 2,
-            GAME_HEIGHT
-        );
-        this.physics.world.setBoundsCollision(true, true, true, false);
-
-        this.physics.add.collider(
-            this.ball,
-            this.paddle,
-            this.onPaddleHit,
-            null,
-            this
-        );
-
-        this.physics.add.collider(
-            this.ball,
-            this.bricks,
-            this.onBrickHit,
-            null,
-            this
-        );
+        });
     }
 
     createControls() {
         this.cursors = this.input.keyboard.createCursorKeys();
         this.keys = this.input.keyboard.addKeys('A,D');
-
-        this.input.keyboard.on('keydown-SPACE', () => this.handleAction());
-
-        this.input.on('pointermove', (pointer) => {
-            this.targetPaddleX = pointer.worldX;
-        });
-
+        this.input.keyboard.on('keydown-SPACE', this.handleAction, this);
+        this.input.on('pointermove', (pointer) => { this.pointerX = pointer.worldX; });
         this.input.on('pointerdown', (pointer) => {
-            this.targetPaddleX = pointer.worldX;
+            this.pointerX = pointer.worldX;
             this.handleAction();
+        });
+        this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+            this.input.keyboard.off('keydown-SPACE', this.handleAction, this);
         });
     }
 
     handleAction() {
         if (this.finished) {
             this.scene.restart();
-            return;
-        }
-
-        if (!this.started) {
+        } else if (!this.started) {
+            this.updatePaddle(0);
+            this.ball.body.reset(this.paddle.x, PADDLE_Y - 42);
             this.started = true;
-            this.statusText.setVisible(false);
-            this.ball.body.setVelocity(420, -620);
+            this.ball.body.setVelocity(0, -BALL_SPEED);
         }
     }
 
     onPaddleHit(ball, paddle) {
-        if (ball.body.velocity.y < 0) {
-            return;
-        }
+        const offset = Phaser.Math.Clamp(
+            (ball.body.center.x - paddle.body.center.x) / (PADDLE_WIDTH / 2), -1, 1
+        );
+        const layerStep = offset < -1 / 3 ? 1 : offset > 1 / 3 ? -1 : 0;
+        this.layer = Phaser.Math.Clamp(this.layer + layerStep, 0, LAYERS.length - 1);
 
-        const hitOffset = Phaser.Math.Clamp((ball.x - paddle.x) / (paddle.width / 2), -1, 1);
-        ball.body.setVelocityX(hitOffset * 650);
-        ball.body.setVelocityY(-Math.max(560, Math.abs(ball.body.velocity.y)));
+        const angle = offset * Math.PI / 3;
+        ball.body.setVelocity(Math.sin(angle) * BALL_SPEED, -Math.cos(angle) * BALL_SPEED);
     }
 
     onBrickHit(ball, brick) {
-        if (!brick.active) {
-            return;
-        }
-
-        brick.body.enable = false;
-        brick.setActive(false);
-        brick.setVisible(false);
-        brick.glow.setVisible(false);
-        brick.line.setVisible(false);
-
-        this.bricksRemaining -= 1;
-        this.score += 100;
-
-        if (this.bricksRemaining === 0) {
-            this.endGame('CLEAR');
-        }
-    }
-
-    resetBall() {
-        this.started = false;
-        this.ball.body.stop();
-        this.ball.setPosition(this.paddle.x, this.paddle.y - 42);
-        this.ballTrail = [];
-        this.trailGraphics.clear();
-
-        if (!this.statusText) {
-            this.statusText = this.add.text(
-                GAME_WIDTH / 2,
-                780,
-                'CLICK / SPACE',
-                {
-                    fontFamily: 'monospace',
-                    fontSize: '26px',
-                    color: '#71858d'
-                }
-            ).setOrigin(0.5);
-        } else {
-            this.statusText.setText('CLICK / SPACE');
-            this.statusText.setVisible(true);
-        }
-    }
-
-    loseLife() {
-        this.lives -= 1;
-
-        if (this.lives <= 0) {
-            this.endGame('GAME OVER');
-        } else {
-            this.resetBall();
+        brick.destroy();
+        if (this.bricks.getLength() === 0) {
+            this.endGame('ALL LAYERS CLEARED');
         }
     }
 
@@ -211,95 +125,132 @@ class GameScene extends Phaser.Scene {
         this.finished = true;
         this.started = false;
         this.ball.body.stop();
-        this.ballTrail = [];
-        this.trailGraphics.clear();
-        this.statusText.setText(`${message}\nCLICK / SPACE`);
-        this.statusText.setAlign('center');
-        this.statusText.setVisible(true);
+        this.status.setText(`${message}  /  CLICK OR SPACE TO RESTART`);
     }
 
     updatePaddle(delta) {
-        const direction =
-            (this.cursors.left.isDown || this.keys.A.isDown ? -1 : 0) +
-            (this.cursors.right.isDown || this.keys.D.isDown ? 1 : 0);
-
+        const left = this.cursors.left.isDown || this.keys.A.isDown;
+        const right = this.cursors.right.isDown || this.keys.D.isDown;
+        const direction = Number(right) - Number(left);
+        const scale = LAYERS[this.layer].scale;
+        let x = this.paddle.x;
         if (direction !== 0) {
-            this.targetPaddleX = this.paddle.x + direction * 900 * (delta / 1000);
+            this.pointerX = null;
+            x += direction * 1200 * delta / 1000;
+        } else if (this.pointerX !== null) {
+            x = GAME_WIDTH / 2 + (this.pointerX - GAME_WIDTH / 2) / scale;
         }
-
-        const halfWidth = this.paddle.width / 2;
-        this.targetPaddleX = Phaser.Math.Clamp(
-            this.targetPaddleX,
-            WALL_MARGIN + halfWidth,
-            GAME_WIDTH - WALL_MARGIN - halfWidth
+        const halfWidth = PADDLE_WIDTH / 2;
+        this.paddle.body.reset(
+            Phaser.Math.Clamp(x, WALL_MARGIN + halfWidth, GAME_WIDTH - WALL_MARGIN - halfWidth),
+            PADDLE_Y
         );
-
-        const nextX = Phaser.Math.Linear(this.paddle.x, this.targetPaddleX, 0.35);
-        this.paddle.body.reset(nextX, this.paddle.y);
-        this.paddleGlow.setPosition(this.paddle.x, this.paddle.y);
-        this.paddleLine.setPosition(this.paddle.x, this.paddle.y);
     }
 
-    updateBallTrail() {
-        if (this.started) {
-            this.ballTrail.unshift({ x: this.ball.x, y: this.ball.y });
+    project(x, y, layer) {
+        const { scale, top } = LAYERS[layer];
+        return {
+            x: GAME_WIDTH / 2 + (x - GAME_WIDTH / 2) * scale,
+            y: top + (y - FIELD_TOP) * scale * 0.76
+        };
+    }
 
-            if (this.ballTrail.length > 22) {
-                this.ballTrail.pop();
+    drawPlayfield() {
+        const g = this.playfield;
+        g.clear();
+
+        const rightWall = GAME_WIDTH - WALL_MARGIN;
+        const corners = [[WALL_MARGIN, FIELD_TOP], [rightWall, FIELD_TOP],
+            [WALL_MARGIN, PADDLE_Y], [rightWall, PADDLE_Y]];
+        g.lineStyle(2, 0x8093be, 0.35);
+        for (const [x, y] of corners) {
+            const near = this.project(x, y, 0);
+            const far = this.project(x, y, 2);
+            g.lineBetween(near.x, near.y, far.x, far.y);
+        }
+
+        for (let layer = LAYERS.length - 1; layer >= 0; layer -= 1) {
+            const { color, scale } = LAYERS[layer];
+            const active = layer === this.layer;
+            const topLeft = this.project(WALL_MARGIN, FIELD_TOP, layer);
+            const bottomRight = this.project(rightWall, PADDLE_Y, layer);
+            g.lineStyle(active ? 4 : 2, color, active ? 0.7 : 0.28);
+            g.strokeRect(topLeft.x, topLeft.y, bottomRight.x - topLeft.x, bottomRight.y - topLeft.y);
+
+            for (const brick of this.bricks.getChildren()) {
+                if (brick.layer !== layer) {
+                    continue;
+                }
+                const point = this.project(brick.x - brick.width / 2, brick.y - brick.height / 2, layer);
+                const width = brick.width * scale;
+                const height = brick.height * scale * 0.76;
+                g.fillStyle(color, active ? 0.32 : 0.09);
+                g.fillRect(point.x, point.y, width, height);
+                g.lineStyle(active ? 3 : 2, color, active ? 1 : 0.43);
+                g.strokeRect(point.x, point.y, width, height);
             }
         }
 
-        this.trailGraphics.clear();
+        const { name, color, scale } = LAYERS[this.layer];
+        const zoneWidth = PADDLE_WIDTH / 3;
+        const zoneColors = [LAYERS[2].color, color, LAYERS[0].color];
+        this.zoneLabels.forEach((label, zone) => {
+            const left = this.paddle.x - PADDLE_WIDTH / 2 + zone * zoneWidth;
+            const point = this.project(left, PADDLE_Y, this.layer);
+            const atLimit = (zone === 0 && this.layer === 2) || (zone === 2 && this.layer === 0);
+            g.fillStyle(zoneColors[zone], atLimit ? 0.25 : 0.95);
+            g.fillRect(point.x + 2, point.y - 6, zoneWidth * scale - 4, 12);
+            label.setPosition(point.x + zoneWidth * scale / 2, point.y + 12).setAlpha(atLimit ? 0.4 : 1);
+        });
 
-        for (let index = 0; index < this.ballTrail.length - 1; index += 1) {
-            const from = this.ballTrail[index];
-            const to = this.ballTrail[index + 1];
-            const fade = 1 - index / (this.ballTrail.length - 1);
+        const ball = this.project(this.ball.x, this.ball.y, this.layer);
+        g.fillStyle(color, 0.25);
+        g.fillCircle(ball.x, ball.y, BALL_RADIUS * scale * 2);
+        g.fillStyle(0xffffff, 1);
+        g.fillCircle(ball.x, ball.y, BALL_RADIUS * scale);
 
-            this.trailGraphics.lineStyle(14, 0xff3cac, 0.08 * fade);
-            this.trailGraphics.lineBetween(from.x, from.y, to.x, to.y);
-            this.trailGraphics.lineStyle(3, 0xff91d2, 0.8 * fade);
-            this.trailGraphics.lineBetween(from.x, from.y, to.x, to.y);
+        this.hud.setText(`DEPTH ${name}    BRICKS ${this.bricks.getLength()}    LIVES ${this.lives}`);
+        this.hud.setTint(color);
+        this.status.setVisible(!this.started);
+        if (!this.started && !this.finished) {
+            this.status.setText('CLICK / SPACE TO SERVE');
         }
     }
 
     update(time, delta) {
-        this.updatePaddle(delta);
-
-        if (!this.started && !this.finished) {
-            this.ball.body.reset(this.paddle.x, this.paddle.y - 42);
+        if (!this.finished) {
+            this.updatePaddle(delta);
+            if (this.started && this.ball.y > GAME_HEIGHT) {
+                this.lives -= 1;
+                this.ball.body.stop();
+                if (this.lives === 0) {
+                    this.endGame('GAME OVER');
+                } else {
+                    this.layer = MIDDLE_LAYER;
+                    this.started = false;
+                }
+            }
+            if (!this.started && !this.finished) {
+                this.ball.body.reset(this.paddle.x, PADDLE_Y - 42);
+            }
         }
-
-        this.ballGlow.setPosition(this.ball.x, this.ball.y);
-        this.updateBallTrail();
-
-        if (this.started && this.ball.y > GAME_HEIGHT + 30) {
-            this.loseLife();
-        }
+        this.drawPlayfield();
     }
 }
 
-const config = {
+new Phaser.Game({
     type: Phaser.AUTO,
     parent: 'game-container',
     width: GAME_WIDTH,
     height: GAME_HEIGHT,
-    backgroundColor: '#000000',
-    disableVisibilityChange: true,
+    backgroundColor: '#090d18',
     scene: GameScene,
     physics: {
         default: 'arcade',
-        arcade: {
-            gravity: { y: 0 },
-            debug: false
-        }
+        arcade: { gravity: { y: 0 } }
     },
     scale: {
         mode: Phaser.Scale.FIT,
-        autoCenter: Phaser.Scale.CENTER_BOTH,
-        width: GAME_WIDTH,
-        height: GAME_HEIGHT
+        autoCenter: Phaser.Scale.CENTER_BOTH
     }
-};
-
-new Phaser.Game(config);
+});
