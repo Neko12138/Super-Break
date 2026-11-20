@@ -10,9 +10,9 @@ const MIDDLE_LAYER = 1;
 
 // Physics runs in the same X/Y space on every layer. Only drawing uses this projection.
 const LAYERS = [
-    { name: 'NEAR', scale: 0.98, top: 262, color: 0xffa86e },
-    { name: 'MID', scale: 0.83, top: 193, color: 0x60efdc },
-    { name: 'FAR', scale: 0.68, top: 124, color: 0xba9bff }
+    { name: 'NEAR', scale: 0.98, top: 262, color: 0xffa86e, speed: 0.85, speedLabel: 'SLOW' },
+    { name: 'MID', scale: 0.83, top: 193, color: 0x60efdc, speed: 1, speedLabel: 'MEDIUM' },
+    { name: 'FAR', scale: 0.68, top: 124, color: 0xba9bff, speed: 1.25, speedLabel: 'FAST' }
 ];
 
 class GameScene extends Phaser.Scene {
@@ -99,7 +99,7 @@ class GameScene extends Phaser.Scene {
             this.updatePaddle(0);
             this.ball.body.reset(this.paddle.x, PADDLE_Y - 42);
             this.started = true;
-            this.ball.body.setVelocity(0, -BALL_SPEED);
+            this.ball.body.setVelocity(0, -BALL_SPEED * LAYERS[this.layer].speed);
         }
     }
 
@@ -111,7 +111,8 @@ class GameScene extends Phaser.Scene {
         this.layer = Phaser.Math.Clamp(this.layer + layerStep, 0, LAYERS.length - 1);
 
         const angle = offset * Math.PI / 3;
-        ball.body.setVelocity(Math.sin(angle) * BALL_SPEED, -Math.cos(angle) * BALL_SPEED);
+        const speed = BALL_SPEED * LAYERS[this.layer].speed;
+        ball.body.setVelocity(Math.sin(angle) * speed, -Math.cos(angle) * speed);
     }
 
     onBrickHit(ball, brick) {
@@ -191,7 +192,7 @@ class GameScene extends Phaser.Scene {
             }
         }
 
-        const { name, color, scale } = LAYERS[this.layer];
+        const { name, color, scale, speedLabel } = LAYERS[this.layer];
         const zoneWidth = PADDLE_WIDTH / 3;
         const zoneColors = [LAYERS[2].color, color, LAYERS[0].color];
         this.zoneLabels.forEach((label, zone) => {
@@ -209,7 +210,7 @@ class GameScene extends Phaser.Scene {
         g.fillStyle(0xffffff, 1);
         g.fillCircle(ball.x, ball.y, BALL_RADIUS * scale);
 
-        this.hud.setText(`DEPTH ${name}    BRICKS ${this.bricks.getLength()}    LIVES ${this.lives}`);
+        this.hud.setText(`DEPTH ${name}    SPEED ${speedLabel}    BRICKS ${this.bricks.getLength()}    LIVES ${this.lives}`);
         this.hud.setTint(color);
         this.status.setVisible(!this.started);
         if (!this.started && !this.finished) {
